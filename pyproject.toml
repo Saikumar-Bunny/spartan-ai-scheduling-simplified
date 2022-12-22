@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "spartan-ai-scheduling-simplified"
+version = "0.1.0"
+description = ""
+authors = ["Saikumar Reddy Yeddula <sai.ricky.king@gmail.com>"]
+readme = "README.md"
+packages = [{include = "spartan_ai_scheduling_simplified"}]
+
+[tool.poetry.dependencies]
+python = "^3.8"
+numpy = "^1.23.5"
+gym = "^0.26.2"
+matplotlib = "^3.6.2"
+torch = "^1.13.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
