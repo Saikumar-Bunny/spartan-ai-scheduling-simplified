@@ -37,8 +37,8 @@ def load_test_data(th_slab_min=IPS.th_slab_min,
         test_states = []
         for i in range(total_samples):
             test_states.append((th_slab_min / th_slab_max) + \
-                           np.random.beta(alpha, beta, 1) * \
-                           (1 - th_slab_min / th_slab_max))
+                               np.random.beta(alpha, beta, 1) * \
+                               (1 - th_slab_min / th_slab_max))
         df = pd.DataFrame(test_states, columns=['Slab thickness'])
         df.to_csv(save_name)
     return df
@@ -96,7 +96,7 @@ def seed_torch(seed=IPS.SEED):
 
 
 # Neural network for selecting appropriate action
-def select_action(network, state):
+def select_action(network, state, action=0):
     """  Selects an action given state
     :param: network (Pytorch Model): neural network used in forward pass
     :param: state (Array): environment state
@@ -105,16 +105,17 @@ def select_action(network, state):
     """
 
     # Create the state tensor
-    state_new = np.array(state)
-    state_tensor = torch.from_numpy(state_new).float().unsqueeze(0).to(DEVICE)
-    state_tensor.required_grad = True
+    state_action_new = [state, action]
+
+    state_action_tensor = torch.tensor(state_action_new).float().unsqueeze(0).to(DEVICE)
+    state_action_tensor.required_grad = True
 
     # Forward pass
-    action_values = network(state_tensor)
+    values = network(state_action_tensor)
 
     # Compute mean and standard-deviation to obtain the normal distribution
     # action = max(action_values)
-    return action_values
+    return values
 
 
 # Using a neural network to learn our policy parameters for one continuous action
@@ -124,18 +125,18 @@ class PolicyNetwork(nn.Module):
     """
 
     # Takes in observations and outputs actions mu and sigma
-    def __init__(self, observation_space):
+    def __init__(self):
         """ Read the observation_space, instantiate the layers in the network.
         Hidden-layer has 128 nodes while the output has 2 nodes.
         """
 
         super(PolicyNetwork, self).__init__()
-        self.input_layer = nn.Linear(observation_space, 8)
+        self.input_layer = nn.Linear(2, 8)
         self.hidden_layer_1 = nn.Linear(8, 64)
         self.hidden_layer_2 = nn.Linear(64, 128)
         self.hidden_layer_3 = nn.Linear(128, 64)
         self.hidden_layer_4 = nn.Linear(64, 8)
-        self.output_layer = nn.Linear(8, IPS.n_furnaces)
+        self.output_layer = nn.Linear(8, 1)
 
     # Forward pass
     def forward(self, x):
@@ -152,8 +153,8 @@ class PolicyNetwork(nn.Module):
                     F.relu(self.hidden_layer_1(x))))))))
 
         # Actions
-        action_values = self.output_layer(x)
-        return action_values
+        value = self.output_layer(x)
+        return value
 
 
 def process_rewards(rewards):
@@ -168,7 +169,7 @@ def process_rewards(rewards):
     # Track cumulative reward
     total_r = 0
     if len(rewards) == 1:
-        G.append(rewards[0]/IPS.REWARD_NRMLZ_CONSTANT)
+        G.append(rewards[0] / IPS.REWARD_NRMLZ_CONSTANT)
         # Whitening rewards
         G = torch.tensor(G, requires_grad=True).to(DEVICE)
     else:
@@ -182,5 +183,3 @@ def process_rewards(rewards):
             G = torch.tensor(G, requires_grad=True).to(DEVICE)
             G = (G - G.mean()) / G.std()
     return G
-
-

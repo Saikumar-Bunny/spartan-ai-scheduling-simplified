@@ -10,23 +10,25 @@ FUR1_EFF = 0.95
 FUR2_EFF = 0.05
 
 # Simulation Params:
-TOTAL_STEPS = 1  # minutes
-DISCOUNT_FACTOR = 0
-NUM_EPISODES = 30000
 SKIP_TRAINING = False
-SOLVED_SCORE = 400
+USE_PREV_MODEL = False
+TOTAL_STEPS = 1  # steps per episode
+DISCOUNT_FACTOR = 0
+NUM_EPISODES = 100000  # Total episodes
 EPSILON = 0.05
-LR = 0.001
-
-# Testing Params:
-REWARD_NRMLZ_CONSTANT = 500 # minutes
-TEST_SAMPLES = 5000
-DATA_SAVE_NAME = 'simplified_model_test_data.csv'
-TEST_RECORDS = 'compiled_data.csv'
+LR = 0.01
 
 # Other Params:
+REWARD_NRMLZ_CONSTANT = 500  # minutes
 SEED = 42
 
-# Log files:
-MODEL = 'spartan_ai_simple_model'
+# Testing Params:
+TEST_SAMPLES = 5000
+
+# Report saving:
+EPISODE_SAVE_TRIGGER = 5000  # Episodes
+MODEL = './reports/spartan_ai_simple_model'
 LOG_FILE = 'logs.txt'
+DATA_SAVE_NAME = './reports/simplified_model_test_data.csv'
+TEST_RECORDS = './reports/compiled_data.csv'
+EPOCH_VS_REWARD_FIG = './reports/Training_RewardsVsEpisodes.jpg'
