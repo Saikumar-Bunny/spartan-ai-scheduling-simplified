@@ -1,84 +1,180 @@
 # -*- coding: utf-8 -*-
+from collections import deque, namedtuple
 from gym import Env
-from gym.spaces import Box, Discrete
+from gym.spaces import Box, Discrete, MultiDiscrete
+from typing import List, Tuple, Dict
+
+
+import numpy as np
+
+from spartan_ai_scheduling_simplified import storage_classes as sc
+from spartan_ai_scheduling_simplified import PhysicalStorageClasses as psc
+from spartan_ai_scheduling_simplified import helpers
 from spartan_ai_scheduling_simplified import INIT_PARAMS_SIMPLE as IPS
-import time
-from spartan_ai_scheduling_simplified.data_generation import Slab
 
 
-class FurnaceEnvironment(Env):
+class ReheatFurnaceEnvironment(Env):
     """
-    State/Observation of the Furnace space availability."""
+    State/Observation of the Furnace space availability.
+    """
 
-    def __init__(self):
-        self._furnace1_eff = IPS.FUR1_EFF
-        self._furnace2_eff = IPS.FUR2_EFF
-        self.current_time = 0
-        self.t_heating = 0
-        self.t_heating_ideal_a1 = 0
-        self.t_heating_ideal_a2 = 0
-        self.th_slab = 0
-        self.action = 0
-        self.products_heated = 0
-        self.data_counter = 0
+    def __init__(self, wait_bay: psc.WaitingBay, furnaces: List[psc.Furnace]):
+        self.waiting_bay = wait_bay
+        self.furnaces = furnaces
+        self.global_time_ctr = 0.0
+        self.rolled_slab = psc.Slab(0)
+        self.slabs_placed = 0
+        self.slabs_removed = 0
 
         # Observation space: length of the slab observed at time t
-        self.observation_space = Box(low=0.9 * IPS.th_slab_min,
-                                     high=1.1 * IPS.th_slab_max,
-                                     shape=(1,))
-        # action space: 0 Implies furnace1, 1 Implies furnace2
-        self.action_space = Discrete(2)
+        self.state_obj = sc.State()
+        self.state = self.state_obj.state
+        self.reward = 0
 
-    def new_product(self):
-        slab_sample = Slab(self.data_counter)
-        self.t_heating_ideal_a1 = slab_sample.ideal_heating_time()
-        self.t_heating_ideal_a2 = slab_sample.ideal_heating_time()
-        self.data_counter += 1
-        self.th_slab = slab_sample.th_slab
-        return slab_sample.th_slab
+        # action space: {a_1, a_2, a_3}
+        # a_1: Slab location from which agent picks the slab from the Waiting Bay -
+        # 0 - Don't pick; 1 to wb_length - Pick from 1 to wb_length rpy; (n_locations+1) - Dummy.
+        # a_2: Add Slab to furnace:
+        # 0 - Don't place any slab; 1 to n_fur - Put in 1 to n_fur rpy; (n_fur+1) Dummy action.
+        # a_3: Remove slab from furnace -
+        # 0 - Don't remove any slab; 1 to n_fur - Remove from 1 to n_fur; (n_fur+1) Inconsequential action.
+        self.action_space = MultiDiscrete([IPS.WAIT_BAY_LEN+1, IPS.n_furnaces+1, IPS.n_furnaces+1])
 
-    def step(self, action):
+    def step(self, action: List[int]) -> Tuple[sc.State, sc.Reward, sc.State, bool, sc.Info]:
         """ Take the "action" and step to a new_state when a new slab arrives
         """
 
-        # Generate 1 sample-slab
-        self.action = action
+        reward = 0
 
-        # Observes the slab property - only thickness here
-        observation = (self.th_slab,)
+        # For every step, generate state using wb, fur, rolled_slab
+        self.state_obj.generate_state(self.waiting_bay, self.furnaces, self.rolled_slab)
+        self.state = self.state_obj.state
 
-        # Action - 0 Furnace1; 1 Furnace2
-        if action == 0:
-            # Find the heating time in furnace1 for slab with given properties
-            self.t_heating = self.t_heating_ideal_a1 / IPS.FUR1_EFF
-        elif action == 1:
-            # Find the heating time in furnace2 for slab with given properties
-            self.t_heating = self.t_heating_ideal_a2 / IPS.FUR2_EFF
+        # Execute Action and Get Reward::
+        # Action - a1: Pick the slab from Waiting Buffer
+        picked_slab, action1_status = self.waiting_bay.remove_from_buffer(action[0])
+        if action1_status == -1:
+            # Tried to pick slab from an empty location. Stop the episode - hard constraint
+            reward += IPS.reward_improper_pick_wb
+            # Place the slab back in the waiting bay
+            place_back_status = self.waiting_bay.add_to_buffer(location=action[0], slab=picked_slab)
+            assert place_back_status == 1
         else:
-            print("Cannot interpret \n")
+            # Properly picked the slab
+            reward += IPS.reward_proper_pick_wb
 
-        # Reward is inversely proportional to the total time at the end of TOTAL_TIME
-        reward = self.t_heating
-        self.current_time += self.t_heating
-        self.products_heated += 1
+        # Action - a2: Remove a slab from furnace. Furnace num = action[1]
+            removed_slab, action2_status = self.furnaces[action[1]].remove_slab()
+            if action2_status == -1:
+                # Tried to remove slab from an empty furnace - soft constraint
+                reward += IPS.reward_improper_remove_fur
+            else:
+                # Properly removed the slab but the rolling mill is blocked - soft constraint
+                if self.rolled_slab.balance_rolling_time >= IPS.threshold_rolling_time:
+                    reward += IPS.reward_rolling_block
+                    # Place the slab back in the furnace
+                    place_back_status = self.furnaces[action[1]].add_slab(removed_slab)
+                    assert place_back_status == 1
+
+                # Properly removed the slab and the rolling mill is free
+                else:
+                    self.rolled_slab = removed_slab
+                    # Removed slab is properly cooked
+                    if abs(removed_slab.overcook[1]) <= IPS.threshold_overcook:
+                        reward += IPS.reward_propercook
+                    # Removed slab is under or over cooked
+                    else:
+                        reward += removed_slab.overcook[1] * IPS.reward_overcook if removed_slab.overcook[0] \
+                            else removed_slab.overcook[1] * IPS.reward_undercook
+
+            # Action - a3: Place the picked slab in the furnace
+            action3_status = self.furnaces[action[2]].add_slab(picked_slab)
+            if action3_status == -1:
+                # Cannot place the slab in furnace as it is full - soft constraint
+                reward += IPS.reward_improper_add_fur
+                # Place the slab back in the waiting bay
+                place_back_status = self.waiting_bay.add_to_buffer(location=action[0], slab=picked_slab)
+                assert place_back_status == 1
+            else:
+                # Properly added to the furnace
+                reward += IPS.reward_proper_add_fur
+
+            # Average accumulated negative reward for the overcooks in the furnaces:
+            total_avg_sum = 0
+            for furnace in self.furnaces:
+                total_avg_sum += (np.where(np.array(furnace.balance_furnace_times) < 0.0,
+                                  np.array(furnace.balance_furnace_times),
+                                  0).sum())/((furnace.furnace_height+1) * (furnace.furnace_width+1))
+            reward += total_avg_sum * IPS.reward_overcooks_in_furnace
+
+            # Reward to penalise longer furnace on times and reduce energy
+            total_avg_sum = 0
+            for furnace in self.furnaces:
+                total_avg_sum += (np.where(np.array(furnace.balance_furnace_times) > 0.0,
+                                           np.array(furnace.balance_furnace_times),
+                                           0).sum()) / ((furnace.furnace_height + 1) * (furnace.furnace_width + 1))
+            reward += total_avg_sum * IPS.reward_longer_heating_in_furnace
+
+            # Time-step: Reduce number of timesteps
+            reward += IPS.reward_per_step
+
+            if action2_status != -1:
+                self.slabs_placed += 1
+            if action3_status != -1:
+                self.slabs_removed += 1
 
         done = False
-        if self.products_heated >= IPS.TOTAL_STEPS: # IPS.TOTAL_TIME:
+        if (self.slabs_removed >= IPS.TOTAL_REMOVED) and (self.slabs_placed >= IPS.TOTAL_PLACED):
             done = True
+        elif self.global_time_ctr >= IPS.MAX_TIME_STEPS * IPS.UNIT_TIME_STEP:
+            done = True
+        reward_obj = sc.Reward(reward)
+        info = {}  # any high level info that needs to be passed
+        info_obj = sc.Info(info)
 
-        return observation, reward, done, {}
+        # Time-step dynamics:
+        self.waiting_bay.time_step()
+        for furnace in self.furnaces:
+            furnace.time_step()
+        self.rolled_slab.balance_rolling_time -= 1
+
+        # New state:
+        new_state_obj = sc.State()
+        new_state_obj.generate_state(self.waiting_bay, self.furnaces, self.rolled_slab)
+        new_state = new_state_obj.state
+
+        return self.state_obj, reward_obj, new_state_obj, done, info_obj
 
     def render(self):
-        print(f"Slab was {self.th_slab} thick and assigned to Furnace {self.action + 1}")
+        pass
 
     def reset(self):
         """ Reset the slab thickness to 0.
         """
-        self.current_time = 0
-        self.t_heating = 0
-        self.th_slab = 0
-        self.products_heated = 0
-        return self.th_slab,
+        self.waiting_bay = psc.WaitingBay()
+        self.furnaces = []
+        for i in range(1, IPS.n_furnaces + 1):
+            self.furnaces.append(psc.Furnace(i))
+
+        self.global_time_ctr = 0.0
+        self.rolled_slab = psc.Slab(0)
+        self.slabs_placed = 0
+        self.slabs_removed = 0
+
+        state_obj = sc.State()
+        self.state = state_obj.state
+        self.reward = 0
+        return self.state
 
     def close(self):
         pass
+
+
+if __name__ == "__main__":
+    c = namedtuple('x', 'y')
+    a = deque([(1, 2), (3, 4), (5, 6), (1, 8), (3, 1), (5, 7)])
+    print(a)
+    a_list = list(a)
+    print(a_list)
+    b = [a_list[i] for i in np.random.choice(len(a_list), 3, replace=False)]
+    print(b)

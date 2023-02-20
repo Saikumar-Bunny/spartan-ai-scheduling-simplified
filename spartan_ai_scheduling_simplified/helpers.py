@@ -1,10 +1,13 @@
 from spartan_ai_scheduling_simplified import INIT_PARAMS_SIMPLE as IPS
+from spartan_ai_scheduling_simplified.environment_simple import Slab, Furnace
+from spartan_ai_scheduling_simplified.environment_simple import WaitingBuffer
 from spartan_ai_scheduling_simplified import helpers
 import numpy as np
 import pandas as pd
 import datetime
 import random
 import os
+from typing import List, Tuple
 
 import torch
 import torch.nn as nn
@@ -44,7 +47,7 @@ def load_test_data(th_slab_min=IPS.th_slab_min,
     return df
 
 
-def get_slab_thickness(data_counter) -> float:
+def get_slab_samples(data_counter: int) -> Tuple[float, str]:
     """
     Sample one value of slab property from the data set
     :param data_counter: Corresponding slab number in sequence
@@ -52,27 +55,47 @@ def get_slab_thickness(data_counter) -> float:
     """
     # Thickness distribution of the slabs - Normalised thickness
     df = helpers.load_test_data()
-    th_slab_nrmlzd = df['Slab thickness'].iloc[data_counter]
-    return th_slab_nrmlzd
+    return df['Slab thickness'].iloc[data_counter], df['Slab ID'].iloc[data_counter]
 
 
-def ideal_heating_time(th_slab_nrmlzd, upward=True, c_1=8 * 60) -> datetime.timedelta:
+def heating_time(slab: Slab, action: int, c_1=IPS.TIME_CONSTANT) -> Tuple[float, float]:
     # TODO: At the moment the ideal heating time is only a function of
     #   slab thickness. It can further include the impact of l_slab,
     #   vol_slab, mat_comp as separate parametric gaussian processes or
     #   a supervised learning model.
 
-    # Sinusoidal function
+    th_slab_nrmlzd = slab.th_slab
     if th_slab_nrmlzd <= 1:
-        if upward:
-            t_heating_ideal = c_1 * np.sin((np.pi / 2) * th_slab_nrmlzd)
+        # Various types of heating functions can be defined here:
+        # TODO: Add other types of heating curves or replace with supervised model
+        # Sinusoidal
+        t_heating_sin = c_1 * np.sin((np.pi / 2) * th_slab_nrmlzd)
+
+        # Inverse Sinusoidal
+        t_heating_inv_sin = c_1 * (1 - np.sin((np.pi / 2) * th_slab_nrmlzd))
+
+        if IPS.HEAT_CURVE_TYPE[action] == 1:  # If we prescribed heat curve 1
+            t_heating = t_heating_sin * IPS.FURNACE_EFFICIENCY[action]
+            t1, t2 = t_heating_sin, t_heating_inv_sin
         else:
-            t_heating_ideal = c_1 * (1 - np.sin((np.pi / 2) * th_slab_nrmlzd))
+            t_heating = t_heating_inv_sin * IPS.FURNACE_EFFICIENCY[action]
+            t2, t1 = t_heating_sin, t_heating_inv_sin
+
+        t_heating_ideal = min(t1 * IPS.FURNACE_EFFICIENCY[0], t2 * IPS.FURNACE_EFFICIENCY[1])
+        return t_heating, t_heating_ideal
     else:
         raise ValueError(f"Length of the slab at exceeds the max limit: "
-                         f"{th_slab_nrmlzd} >  1")
-    return t_heating_ideal
+                         f"{th_slab_nrmlzd} has slab >  1")
 
+
+def get_rolling_time(th_slab: float):
+    """
+    Given the relevant slab properties, estimate the rolling time.
+    Let's assume for now rolling time is constant and 2 units
+    :param th_slab:
+    :return:
+    """
+    return 2
 
 def seed_torch(seed=IPS.SEED):
     """ Removes all the sources of randomness to ensure reproducibility of the
@@ -125,18 +148,22 @@ class PolicyNetwork(nn.Module):
     """
 
     # Takes in observations and outputs actions mu and sigma
-    def __init__(self):
+    def __init__(self, n_batches, n_furnaces):
         """ Read the observation_space, instantiate the layers in the network.
         Hidden-layer has 128 nodes while the output has 2 nodes.
         """
 
         super(PolicyNetwork, self).__init__()
-        self.input_layer = nn.Linear(2, 8)
-        self.hidden_layer_1 = nn.Linear(8, 64)
-        self.hidden_layer_2 = nn.Linear(64, 128)
-        self.hidden_layer_3 = nn.Linear(128, 64)
-        self.hidden_layer_4 = nn.Linear(64, 8)
-        self.output_layer = nn.Linear(8, 1)
+        self.conv1 = nn.Conv2d(in_channels=2, out_channels=8, kernel_size=2)  # No padding; 1 pixel stride
+        self.conv2 = nn.Conv2d(in_channels=8, out_channels=16, kernel_size=2)  # No padding; 1 pixel stride
+        self.pool = nn.MaxPool2d(kernel_size=2)  # No padding; 2 pixel stride
+
+        # Fully connected layers
+        self.fc1 = nn.Linear(in_features=30 * 30 * 32, out_features=128)
+        self.drop = nn.Dropout(p=dropout_prob)
+        self.fc2 = nn.Linear(in_features=128, out_features=10)
+        self.hidden_layer_2 = nn.Linear(128, 64)
+        self.output_layer = nn.Linear(64, n_batches * n_furnaces)
 
     # Forward pass
     def forward(self, x):
@@ -147,10 +174,8 @@ class PolicyNetwork(nn.Module):
         # Input states
         x = self.input_layer(x)
         x = F.relu(x)  # Change on 20_07_22
-        x = F.relu(self.hidden_layer_4(
-            F.relu(self.hidden_layer_3(
-                F.relu(self.hidden_layer_2(
-                    F.relu(self.hidden_layer_1(x))))))))
+        x = F.relu(self.hidden_layer_2(
+            F.relu(self.hidden_layer_1(x))))
 
         # Actions
         value = self.output_layer(x)
@@ -169,7 +194,7 @@ def process_rewards(rewards):
     # Track cumulative reward
     total_r = 0
     if len(rewards) == 1:
-        G.append(rewards[0] / IPS.REWARD_NRMLZ_CONSTANT)
+        G.append(rewards[0])
         # Whitening rewards
         G = torch.tensor(G, requires_grad=True).to(DEVICE)
     else:
@@ -181,5 +206,34 @@ def process_rewards(rewards):
             G.insert(0, total_r)
             # Whitening rewards
             G = torch.tensor(G, requires_grad=True).to(DEVICE)
-            G = (G - G.mean()) / G.std()
+            # G = (G - G.mean()) / G.std()
     return G
+
+
+# Make state space:
+def state_space_gen(slab_thickness_list: List[float], furnace_list: List[Furnace]) -> np.ndarray:
+    fur_state_ht = 0
+    for i in range(len(furnace_list)):
+        fur_state_ht += furnace_list[i].furnace_height
+
+    fur_state_wd = max([furnace_list[i].furnace_width for i in range(len(furnace_list))])
+
+    assert len(slab_thickness_list) <= fur_state_ht
+
+    fur_state_joined = np.zeros([fur_state_ht, fur_state_wd])
+
+    count = 0
+    for i in range(len(furnace_list)):
+        for j in furnace_list[i].furnace_height:
+            for k in furnace_list[i].furnace_width:
+                fur_state_joined[count][k] = furnace_list[i].furnace_slots_slabs[j][k].ideal_heat_time \
+                                             - furnace_list[i].furnace_slots_slabs[j][k].actual_fur_time
+            count += 1
+
+    for j in range(fur_state_ht - len(slab_thickness_list)):
+        slab_thickness_list.append(0)
+
+    assert len(slab_thickness_list) == fur_state_ht
+
+    state_input = np.array(np.transpose(np.array(slab_thickness_list)), fur_state_joined)
+    return state_input
