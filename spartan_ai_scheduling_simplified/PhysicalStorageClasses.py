@@ -2,8 +2,8 @@
 from dataclasses import dataclass
 from typing import List, Dict, Tuple
 
-from spartan_ai_scheduling_simplified import INIT_PARAMS_SIMPLE as IPS
-from spartan_ai_scheduling_simplified import helpers
+import INIT_PARAMS_SIMPLE as IPS
+import helpers
 
 # Physical Storage Classes for Slab, Furnace, Waiting Bay:
 
@@ -12,11 +12,11 @@ from spartan_ai_scheduling_simplified import helpers
 class Slab:
     th_slab: float  # Slab thickness
     id: str  # Slab ID
-    ideal_heat_time: float  # Assigned when placed in furnace
-    actual_fur_time: float  # Assigned when removed out of furnace
-    wait_bay_time: float  # Assigned when placed in Wait buffer
-    overcook: List[bool, float]
-    balance_rolling_time: float # Assigned when placed on the rolling mill
+    overcook: List
+    balance_rolling_time: float  # Assigned when placed on the rolling mill
+    ideal_heat_time: float = 0 # Assigned when placed in furnace
+    wait_bay_time: float = 0  # Assigned when placed in Wait buffer
+    actual_fur_time: float = 0 # Assigned when removed out of furnace
 
     def __init__(self, data_counter):
         self.th_slab, self.slab_id = helpers.get_slab_samples(data_counter)
@@ -45,7 +45,7 @@ class Furnace:
             = [[Slab(0) for _ in range(self.furnace_width)] for _ in range(self.furnace_height)]
 
         # Stores of location of highest non-empty furnace location:
-        self.latest_slab_loc: List[int] = [self.furnace_height, self.furnace_width]
+        self.latest_slab_loc: List[int] = [self.furnace_height-1, self.furnace_width-1]
 
         # Map of remaining heat time for the slabs
         self.balance_furnace_times: List[List[float]] \
@@ -95,16 +95,18 @@ class Furnace:
         """
         if self.is_full():
             return -1
+
+        self.furnace_slots_bool[self.latest_slab_loc[0]][self.latest_slab_loc[1]] = True
+        self.furnace_slots_slabs[self.latest_slab_loc[0]][self.latest_slab_loc[1]] = slab
+        slab.ideal_heat_time = helpers.heating_time(slab.th_slab, self.furnace_number)
+        self.balance_furnace_times[self.latest_slab_loc[0]][self.latest_slab_loc[1]] = slab.ideal_heat_time
+
         if self.latest_slab_loc[1] > 0:  # Latest slab not to "Left end" of furnace
             self.latest_slab_loc[1] -= 1
         else:
             self.latest_slab_loc[0] -= 1
             self.latest_slab_loc[1] = (self.furnace_width - 1)
 
-        self.furnace_slots_bool[self.latest_slab_loc[0]][self.latest_slab_loc[1]] = True
-        self.furnace_slots_slabs[self.latest_slab_loc[0]][self.latest_slab_loc[1]] = slab
-        slab.ideal_heat_time, _ = helpers.heating_time(slab, self.furnace_number)
-        self.balance_furnace_times[self.latest_slab_loc[0]][self.latest_slab_loc[1]] = slab.ideal_heat_time
         return 1
 
     def remove_slab(self):
@@ -122,13 +124,13 @@ class Furnace:
         """
         if self.is_empty():
             return Slab(0), -1
+        slab_rmvd = self.furnace_slots_slabs[self.latest_slab_loc[0]][self.latest_slab_loc[1]]  # Of Dtype Slab
         if self.latest_slab_loc[1] < (self.furnace_width - 1):  # Latest slab not to "Right end" of furnace
             self.latest_slab_loc[1] += 1
         else:
             self.latest_slab_loc[0] += 1
             self.latest_slab_loc[1] = 0
 
-        slab_rmvd = self.furnace_slots_slabs[self.latest_slab_loc[0]][self.latest_slab_loc[1]]  # Of Dtype Slab
         overcook_time = slab_rmvd.actual_fur_time - slab_rmvd.ideal_heat_time
         if overcook_time > 0:
             slab_rmvd.overcook = [True, overcook_time]
@@ -167,9 +169,9 @@ class WaitingBay:
         """
         self.size: int = size
         self.slabs_in_bay: int = 0
-        self.container: List[Slab] = [Slab(0) for _ in range(size)]     # Stores the actual slab
-        self.locs_status: List[int] = [0 for _ in range(size)]   # Boolean: 0 for empty, 1 for full
-        self.th_slabs_list: List[int] = [0 for _ in range(size)]
+        self.container: List[Slab] = [Slab(0) for _ in range(size + 1)]     # Stores the actual slab
+        self.locs_status: List[int] = [0 for _ in range(size + 1)]   # Boolean: 0 for empty, 1 for full
+        self.th_slabs_list: List[int] = [0 for _ in range(size + 1)]
         self.th_slabs_dict: Dict = {}
         self.data_counter: int = 1
 
@@ -181,6 +183,8 @@ class WaitingBay:
             return -1
 
         for i, status in enumerate(self.locs_status):
+            if i == 0:   # No slab in the 0th slot
+                continue
             if status == 1:
                 continue
             self.locs_status[i] = 1
@@ -199,6 +203,7 @@ class WaitingBay:
         :param slab: The slab to be placed back.
         :return: status, -1 failed, 1 pass
         """
+        assert location != 0
         self.locs_status[location] = 1
         self.container[location] = slab
         self.slabs_in_bay += 1
@@ -210,6 +215,7 @@ class WaitingBay:
         """Remove a particular slab from the buffer and empty its spot.
         :param location: The location from where slab is to be picked. Specified by the agent.
         """
+        assert location != 0
         if self.locs_status[location] == 0:
             return Slab(0), -1
 
@@ -229,6 +235,8 @@ class WaitingBay:
         Step time for the slabs in the Waiting Bay.
         """
         for i, status in enumerate(self.locs_status):
+            if i != 0:
+                continue
             if status == 0:
                 continue
             tmp_slab = self.container[i]

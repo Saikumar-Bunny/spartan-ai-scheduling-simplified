@@ -10,11 +10,11 @@ th_slab_min = 2.1
 TIME_CONSTANT = 8 * 60
 
 # Furnace Params:
-n_furnaces = 2
-FURNACE_EFFICIENCY = [0.95, 0.9, 0.01, 0.95, 0.9]
-FURNACE_HEIGHT = [5, 5, 5, 5, 5]
-FURNACE_WIDTH = [5, 5, 5, 5, 5]
-HEAT_CURVE_TYPE = [1, 0, 1, 1, 0]
+n_furnaces = 5
+FURNACE_EFFICIENCY = [None, 0.95, 0.9, 0.01, 0.95, 0.9]
+FURNACE_HEIGHT = [None, 5, 5, 5, 5, 5]
+FURNACE_WIDTH = [None, 5, 5, 5, 5, 5]
+HEAT_CURVE_TYPE = [None, 1, 0, 1, 1, 0]
 # 1 - Sinusoidal, 0 - inverse sinusoidal
 
 # Temporal Params:
@@ -44,15 +44,17 @@ reward_proper_add_fur = +0.1
 reward_overcooks_in_furnace = -0.005 # Say 30 mins average overcook - 30 * 0.001 = 0.03 per step
 reward_longer_heating_in_furnace = -0.001 # Average heating time 200 mins - 200 *0.001 = -0.2
 
+reward_inconsequential_action = -0.5
 reward_per_step = -0.01
 
 # Simulation Params:
+SAMPLE_GENERATION = 2
 # State Params:
 N_MAPS_WB = 2
 N_MAPS_FUR = 2
-N_BATCHES = 10
+N_BATCHES = 1
 
-L_REPLAY_BUFFER = 1000
+L_REPLAY_BUFFER = 10
 SKIP_TRAINING = False
 USE_PREV_MODEL = False
 MAX_TIME_STEPS = 100  # steps per episode
@@ -69,6 +71,7 @@ SMOOTHING_RATE = 0.1
 
 # Other Params:
 HEATING_TIME_NRMLZ = 500  # minutes
+ROLLING_TIME_NRMLZ = 20   # minutes
 SEED = 42
 
 # Testing Params:

@@ -35,13 +35,15 @@ class State:
                         furnaces: List[Furnace],
                         rolled_slab: Slab):
         state_wb, state_furnace, state_roll_time = [], [], 0.0
-        state_wb = np.transpose(np.array([wait_bay.locs_status, wait_bay.th_slabs_list]))
-        for furnace in furnaces:
-            state_furnace.append(furnace.furnace_slots_bool)
-        for furnace in furnaces:
-            state_furnace.append(furnace.balance_furnace_times)
+        state_wb = np.array([wait_bay.locs_status[1:], wait_bay.th_slabs_list[1:]])
+        # 1: since we are leaving the 0th location in waiting bay
 
-        state_roll_time = rolled_slab.balance_rolling_time
+        for i in range(1, IPS.n_furnaces + 1):
+            state_furnace.append(furnaces[i].furnace_slots_bool)
+        for i in range(1, IPS.n_furnaces + 1):
+            state_furnace.append(np.array(furnaces[i].balance_furnace_times)/IPS.HEATING_TIME_NRMLZ)
+
+        state_roll_time = rolled_slab.balance_rolling_time/IPS.ROLLING_TIME_NRMLZ
         self.state = [state_wb, state_furnace, state_roll_time]
 
 
@@ -79,16 +81,16 @@ class Info:
 class Experience:
     def __init__(
             self,
-            state: State,
-            action: Action,
-            reward: Reward,
-            new_state: State,
+            state_obj: State,
+            action_obj: Action,
+            reward_obj: Reward,
+            new_state_obj: State,
             done: bool
     ):
-        self.state = state
-        self.action = action
-        self.new_state = new_state
-        self.reward = reward
+        self.state_obj = state_obj
+        self.action_obj = action_obj
+        self.new_state_obj = new_state_obj
+        self.reward_obj = reward_obj
         self.done = done
 
 
@@ -105,26 +107,41 @@ class ExperienceReplay:
         if len(self.data) >= IPS.L_REPLAY_BUFFER:
             self.data.pop()
 
-    def sample_elements_arrays(self, sample_size: int) -> \
-            Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray,]:
+    # def sample_elements_arrays(self, sample_size: int) -> \
+    #         Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray,]:
+    #
+    #     states_obj, actions_obj, rewards_obj, new_states_obj, dones = self.sample_elements(sample_size)
+    #     states_arr, actions_arr, rewards_arr, new_states_arr = [], [], [], []
+    #     for i in range(len(states_obj)):
+    #         states_arr.append(states_obj[i].state)
+    #         actions_arr.append(actions_obj[i].action)
+    #         rewards_arr.append(rewards_obj[i].reward)
+    #         new_states_arr.append(new_states_obj[i].state)
+    #
+    #     return np.array(states_arr), np.array(actions_arr), np.array(rewards_arr), np.array(new_states_arr), \
+    #            np.array(dones, dtype=bool)
 
-        states_obj, actions_obj, rewards_obj, new_states_obj, dones = self.sample_elements(sample_size)
-        states_arr, actions_arr, rewards_arr, new_states_arr = [], [], [], []
-        for i in range(len(states_obj)):
-            states_arr.append(states_obj[i].state)
-            actions_arr.append(actions_obj[i].action)
-            rewards_arr.append(rewards_obj[i].reward)
-            new_states_arr.append(new_states_obj[i].state)
+    def sample_elements(self, sample_size: int):
+        sample_list = [list(self.data)[i] for i in np.random.choice(IPS.L_REPLAY_BUFFER-1, sample_size, replace=False)]
+        states_wb, states_fur, states_rollingtime = [], [], []
+        new_states_wb, new_states_fur, new_states_rollingtime = [], [], []
+        actions, rewards, dones = [], [], []
 
-        return np.array(states_arr), np.array(actions_arr), np.array(rewards_arr), np.array(new_states_arr), \
-               np.array(dones, dtype=bool)
-
-    def sample_elements(self, sample_size: int) -> Tuple[List[State], List[Action], List[Reward], List[State], List[bool]]:
-        sample_list = [list(self.data)[i] for i in np.random.choice(IPS.L_REPLAY_BUFFER, sample_size, replace=False)]
-        states_obj, actions_obj, rewards_obj, new_states_obj, dones = [], [], [], [], []
-        i = 0
+        # Outer most loop has the batch information:
         for exp in sample_list:
-            states_obj[i], actions_obj[i], rewards_obj[i], new_states_obj[i], dones[i] = \
-                exp.state, exp.action, exp.reward, exp.new_state, exp.done
-            i += 1
-        return states_obj, actions_obj, rewards_obj, new_states_obj, dones
+            states_wb.append(exp.state_obj.state[0])
+            states_fur.append(exp.state_obj.state[1])
+            states_rollingtime.append(exp.state_obj.state[2])
+            new_states_wb.append(exp.new_state_obj.state[0])
+            new_states_fur.append(exp.new_state_obj.state[1])
+            new_states_rollingtime.append(exp.new_state_obj.state[2])
+
+            actions.append(exp.action_obj.action)
+            rewards.append(exp.reward_obj.reward)
+            dones.append(exp.done)
+
+        # return np.array(states, dtype=float), np.array(actions, dtype=int), \
+        #        np.array(rewards, dtype=float), np.array(new_states, dtype=float), np.array(dones, dtype=bool)
+        states = [np.array(states_wb), np.array(states_fur), np.array(states_rollingtime)]
+        new_states = [np.array(new_states_wb), np.array(new_states_fur), np.array(new_states_rollingtime)]
+        return states, np.array(actions, dtype=int), np.array(rewards), new_states, np.array(dones, dtype=bool)

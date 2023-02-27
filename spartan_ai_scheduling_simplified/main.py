@@ -9,46 +9,43 @@ import storage_classes as sc
 
 TRAINING_EVALUATION_RATIO = 4
 RUNS = 5
-EPISODES_PER_RUN = 400
-STEPS_PER_EPISODE = 200
-TRAINING_SKIP = True
-
-waiting_bay = psc.WaitingBay()
-furnaces = []
-for i in range(1, IPS.n_furnaces + 1):
-    furnaces.append(psc.Furnace(i))
-
+EPISODES_PER_RUN = 200
+STEPS_PER_EPISODE = 1000
+TRAINING_SKIP = False
+import torch
+# Device to run model on
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 if __name__ == "__main__":
-    env = environment_simple.ReheatFurnaceEnvironment(waiting_bay, furnaces)
+    env = environment_simple.ReheatFurnaceEnvironment()
     agent_results = []
     for run in range(RUNS):
         agent = mdsac.Agent(env)
         run_results = []
         for episode_number in range(EPISODES_PER_RUN):
             print('\r', f'Run: {run + 1}/{RUNS} | Episode: {episode_number + 1}/{EPISODES_PER_RUN}', end=' ')
-            evaluation_episode = episode_number % TRAINING_EVALUATION_RATIO == 0
             episode_reward = 0
             state = env.reset()
             done = False
             i = 0
             while not done and i < STEPS_PER_EPISODE:
                 i += 1
-                if ~TRAINING_SKIP:
+                if not TRAINING_SKIP:
                     _, _, action = agent.actor.forward(state)
                 else:
                     action = env.action_space.sample()
                 state_obj, reward_obj, new_state_obj, done, info_obj = env.step(action)
                 action_obj = sc.Action(action)
-                if not evaluation_episode:
-                    experience = sc.Experience(state_obj, action_obj, reward_obj, new_state_obj, done)
-                    if ~TRAINING_SKIP:
-                        agent.train_networks(experience)
+                experience = sc.Experience(state_obj, action_obj, reward_obj, new_state_obj, done)
+                if len(agent.replay_memory) == IPS.L_REPLAY_BUFFER-1:   # Reached the replay buffer length
+                    agent.train_networks(experience)
                 else:
-                    episode_reward += reward_obj.reward
+                    agent.remember(state_obj.state, action_obj.action, reward_obj.reward, new_state_obj.state, done)
+                    print(len(agent.replay_memory))
+                episode_reward += reward_obj.reward
                 state = new_state_obj.state
-            if evaluation_episode:
-                run_results.append(episode_reward)
+            # if evaluation_episode:
+            run_results.append(episode_reward)
         agent_results.append(run_results)
 
     env.close()
